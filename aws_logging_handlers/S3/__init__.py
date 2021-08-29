@@ -15,7 +15,7 @@ import os
 from logging import StreamHandler
 from io import BufferedIOBase, BytesIO
 from boto3 import Session
-from datetime import datetime
+import datetime
 from aws_logging_handlers.validation import is_non_empty_string, is_positive_int, empty_str_err, bad_integer_err, ValidationRule
 from aws_logging_handlers.tasks import Task, task_worker, STOP_SIGNAL
 
@@ -23,6 +23,7 @@ DEFAULT_CHUNK_SIZE = 5 * 1024 ** 2  # 5 MB
 DEFAULT_ROTATION_TIME_SECS = 12 * 60 * 60  # 12 hours
 MAX_FILE_SIZE_BYTES = 100 * 1024 ** 2  # 100 MB
 MIN_WORKERS_NUM = 1
+TZ_INFO = datetime.timezone(datetime.timedelta(hours=9)) # KOREA SEOUL TIME
 
 
 class StreamObject:
@@ -95,16 +96,18 @@ class S3Stream(BufferedIOBase):
         self._rotation_queue = queue.Queue()
         self._session = Session()
         self.s3 = self._session.resource('s3', **boto_session_kwargs)
-        self.start_time = int(datetime.utcnow().strftime('%s'))
+        self.start_time = datetime.datetime.now(tz=TZ_INFO)
         self.key = key
         self.chunk_size = chunk_size
         self.max_file_log_time = max_file_log_time
         self.max_file_size_bytes = max_file_size_bytes
-        self.current_file_name = "{}_{}".format(key, int(datetime.utcnow().strftime('%s')))
+        self.current_file_name = os.path.join(log_root, "{}_{}".format(key, self.datetime_to_str(datetime.datetime.now(tz=TZ_INFO))))
         self.log_root = log_root
         self.encryption_options = encryption_options if encryption_options else {}
         if compress:
             self.current_file_name = "{}.gz".format(self.current_file_name)
+        else:
+            self.current_file_name = "{}.log".format(self.current_file_name)
         self.encoder = encoder
 
         self.bucket = bucket
@@ -153,14 +156,24 @@ class S3Stream(BufferedIOBase):
         _ = codecs.getencoder(val)
         self._encoder = val
 
+    @staticmethod
+    def datetime_to_str(date):
+        return date.strftime('%Y-%m-%d_%H:%M:%S')
+    
+    @staticmethod
+    def datetime_timediff(date1, date2):
+        diff = (date1 - date2).total_seconds()
+        diff = (-1 * diff) if (diff < 0) else diff
+        return diff
+        
     def get_filename(self):
         """
         returns a log file name
         :return: name of the log file in s3
         """
-        filename = os.path.join(self.log_root, "{}_{}").format(self.key, self.start_time)
+        filename = os.path.join(self.log_root, "{}_{}".format(self.key, self.datetime_to_str(self.start_time)))
         if not self.compress:
-            return filename
+            return "{}.log".format(filename)
         return "{}.gz".format(filename)
 
     def _add_task(self, task):
@@ -204,8 +217,9 @@ class S3Stream(BufferedIOBase):
 
         temp_object = self._current_object
         self._add_task(Task(self._close_stream, stream_object=temp_object))
-        self.start_time = int(datetime.utcnow().strftime('%s'))
+        self.start_time = datetime.datetime.now(tz=TZ_INFO)
         new_filename = self.get_filename()
+        print ("FILENAME : {}".format(new_filename))
         self._current_object = self._get_stream_object(new_filename)
 
     @staticmethod
@@ -282,8 +296,7 @@ class S3Stream(BufferedIOBase):
             self._rotate_chunk()
 
         if (self.max_file_size_bytes and self._current_object.byte_count > self.max_file_size_bytes) or (
-                self.max_file_log_time and int(
-            datetime.utcnow().strftime('%s')) - self.start_time > self.max_file_log_time):
+                self.max_file_log_time and int(self.datetime_timediff(datetime.datetime.now(tz=TZ_INFO), self.start_time)) > self.max_file_log_time):
             self._rotate_file()
 
 
